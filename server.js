@@ -11,15 +11,15 @@ connectDB();
 
 const app = express();
 
-// Middleware
+// Simple CORS configuration - just use the basic cors() middleware
 app.use(cors());
+
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 // Routes
 app.use('/api/auth', (await import('./routes/authRoutes.js')).default);
-
-// ===== League Management Routes =====
 app.use('/api/leagues', (await import('./routes/leagueRoutes.js')).default);
 
 // Basic route
@@ -62,4 +62,5 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  console.log(`CORS enabled for ALL origins`);
 });
