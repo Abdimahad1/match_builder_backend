@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import League from '../models/League.js';
 import { generateToken } from '../middleware/authMiddleware.js';
 
+
 // Helper function to generate random password
 const generatePassword = (length = 8) => {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -101,10 +102,9 @@ const loginUser = async (req, res) => {
       });
     }
 
-    // Optimized query: Only select necessary fields and use lean() for performance
+    // DON'T use lean() here - we need the Mongoose document for password comparison
     const user = await User.findOne({ username })
-      .select('+password username userCode phoneNumber role isAdmin settings')
-      .lean(); // Use lean() for faster plain JavaScript objects
+      .select('+password username userCode phoneNumber role isAdmin settings');
 
     if (!user) {
       console.log(`Login failed: User not found - ${username}`);
@@ -114,9 +114,8 @@ const loginUser = async (req, res) => {
       });
     }
 
-    // Verify password
-    const userInstance = new User(user); // Create instance for password comparison
-    const isPasswordValid = await userInstance.comparePassword(password);
+    // Verify password - this will work now since we have the Mongoose document
+    const isPasswordValid = await user.comparePassword(password);
 
     if (!isPasswordValid) {
       console.log(`Login failed: Invalid password for user - ${username}`);
