@@ -84,7 +84,7 @@ const registerUser = async (req, res) => {
   }
 };
 
-// @desc    Authenticate user & get token - OPTIMIZED VERSION
+// @desc    Authenticate user & get token - DEBUG VERSION
 // @route   POST /api/auth/login
 // @access  Public
 
