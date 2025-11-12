@@ -84,7 +84,7 @@ const registerUser = async (req, res) => {
   }
 };
 
-// @desc    Authenticate user & get token - DEBUG VERSION
+// @desc    Authenticate user & get token
 // @route   POST /api/auth/login
 // @access  Public
 
@@ -94,83 +94,102 @@ const loginUser = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Input validation - fail fast
+    // Input validation
     if (!username || !password) {
+      console.log(`❌ Missing credentials: username=${!!username}, password=${!!password}`);
       return res.status(400).json({
         success: false,
         message: 'Username and password are required'
       });
     }
 
-    console.log(`🔍 Looking for user: ${username}`);
+    console.log(`🔍 Attempting login for user: ${username}`);
 
-    // DON'T use lean() here - we need the Mongoose document for password comparison
+    // Use .select('+password') to explicitly include the password field
     const user = await User.findOne({ username })
-      .select('+password username userCode phoneNumber role isAdmin settings');
+      .select('+password +userCode +phoneNumber +role +isAdmin +settings');
 
     if (!user) {
-      console.log(`❌ Login failed: User not found - ${username}`);
+      console.log(`❌ User not found: ${username}`);
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
       });
     }
 
-    console.log(`✅ User found: ${user.username}`);
-    console.log(`🔐 Password field exists: ${!!user.password}`);
-    console.log(`🔐 Password field type: ${typeof user.password}`);
-    console.log(`🔐 Password field value: ${user.password ? '***' : 'undefined'}`);
+    console.log(`✅ User found: ${user.username} (${user._id})`);
+    console.log(`🔐 Password field status: exists=${!!user.password}, type=${typeof user.password}`);
 
-    // Debug the user object structure
-    console.log('🔍 User object keys:', Object.keys(user));
-    console.log('🔍 User object:', JSON.stringify(user, null, 2));
+    // Validate that we have the password field
+    if (!user.password) {
+      console.error(`❌ Password field missing for user: ${username}`);
+      return res.status(500).json({
+        success: false,
+        message: 'Authentication system error'
+      });
+    }
 
-    // Verify password - this will work now since we have the Mongoose document
+    // Verify password
+    console.log(`🔐 Comparing password for user: ${username}`);
     const isPasswordValid = await user.comparePassword(password);
 
     if (!isPasswordValid) {
-      console.log(`❌ Login failed: Invalid password for user - ${username}`);
+      console.log(`❌ Invalid password for user: ${username}`);
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
       });
     }
 
-    // Generate token
+    console.log(`✅ Password validated for user: ${username}`);
+
+    // Generate token - assuming generateToken function exists elsewhere in the file
     const token = generateToken(user._id, user.role);
 
-    // Prepare response data - remove password and add all necessary fields
-    const responseData = {
+    // Prepare user data for response (password is automatically excluded)
+    const userData = {
       _id: user._id,
       userCode: user.userCode,
       username: user.username,
       phoneNumber: user.phoneNumber,
       role: user.role,
-      isAdmin: user.role === 'admin' || user.isAdmin,
+      isAdmin: user.isAdminUser ? user.isAdminUser() : (user.role === 'admin' || user.isAdmin),
       settings: user.settings || {
         profileImageUrl: '',
         selectedLeague: { code: '', name: '' },
         selectedTeam: { name: '', logoUrl: '' }
       },
-      token: token
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
     };
 
     const responseTime = Date.now() - startTime;
-    console.log(`✅ Login successful for ${username} - ${responseTime}ms`);
+    console.log(`🎉 Login successful: ${username} - ${responseTime}ms`);
 
     res.json({
       success: true,
       message: 'Login successful',
-      data: responseData
+      data: {
+        ...userData,
+        token: token
+      }
     });
 
   } catch (error) {
     const responseTime = Date.now() - startTime;
-    console.error(`❌ Login error after ${responseTime}ms:`, error);
+    console.error(`💥 Login error after ${responseTime}ms:`, error);
+    
+    // More specific error messages
+    let errorMessage = 'Server error during login';
+    if (error.name === 'MongoError' || error.name === 'MongooseError') {
+      errorMessage = 'Database error occurred';
+    } else if (error.message.includes('bcrypt')) {
+      errorMessage = 'Password comparison error';
+    }
     
     res.status(500).json({
       success: false,
-      message: 'Server error during login',
+      message: errorMessage,
       error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
     });
   }

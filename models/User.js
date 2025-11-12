@@ -19,7 +19,8 @@ const userSchema = new mongoose.Schema({
   password: {
     type: String,
     required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters long']
+    minlength: [6, 'Password must be at least 6 characters long'],
+    select: false // This hides password by default in queries
   },
   phoneNumber: {
     type: String,
@@ -57,11 +58,21 @@ const userSchema = new mongoose.Schema({
       logoUrl: { type: String, default: '' }
     }
   }
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  toJSON: {
+    transform: function(doc, ret) {
+      delete ret.password; // Ensure password is never included in JSON responses
+      return ret;
+    }
+  }
+});
 
-// Hash password
+// Hash password before saving
 userSchema.pre('save', async function(next) {
+  // Only hash the password if it's modified or new
   if (!this.isModified('password')) return next();
+  
   try {
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
@@ -71,9 +82,20 @@ userSchema.pre('save', async function(next) {
   }
 });
 
-// Compare password
+// Compare password method
 userSchema.methods.comparePassword = async function(candidatePassword) {
+  // If password field is not available (due to select: false), fetch it
+  if (!this.password) {
+    const userWithPassword = await this.model('User').findById(this._id).select('+password');
+    return await bcrypt.compare(candidatePassword, userWithPassword.password);
+  }
+  
   return await bcrypt.compare(candidatePassword, this.password);
+};
+
+// Method to check if user is admin
+userSchema.methods.isAdminUser = function() {
+  return this.role === 'admin' || this.isAdmin === true;
 };
 
 export default mongoose.model('User', userSchema);
