@@ -1,6 +1,9 @@
 const League = require("../models/League");
 const User = require("../models/User").default;
 
+// Import WebSocket functions
+const { broadcastToAll, broadcastToUser, broadcastToUsers } = require("../server");
+
 // Create League
 exports.createLeague = async (req, res) => {
   try {
@@ -19,6 +22,13 @@ exports.createLeague = async (req, res) => {
       status: 'draft'
     });
     
+    // Broadcast new league creation
+    broadcastToAll({
+      type: 'LEAGUE_CREATED',
+      league: league,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ 
       success: true, 
       message: "League created successfully", 
@@ -92,6 +102,13 @@ exports.updateLeague = async (req, res) => {
       .populate('admin', 'name email')
       .populate('participants.userId', 'name email');
     
+    // Broadcast league update
+    broadcastToAll({
+      type: 'LEAGUE_UPDATED',
+      league: updatedLeague,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ 
       success: true, 
       message: "League updated successfully", 
@@ -126,6 +143,13 @@ exports.updateStandings = async (req, res) => {
     league.teams = teams;
     await league.save();
     
+    // Broadcast standings update
+    broadcastToAll({
+      type: 'LEAGUE_UPDATED',
+      leagueId: league._id,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ 
       success: true, 
       message: "Standings updated successfully", 
@@ -137,8 +161,6 @@ exports.updateStandings = async (req, res) => {
 };
 
 // Join League
-// Join League
-// In your leagueController.js - update the joinLeague function
 exports.joinLeague = async (req, res) => {
   try {
     const { joinCode, teamName, teamLogoUrl } = req.body;
@@ -249,6 +271,18 @@ exports.joinLeague = async (req, res) => {
     // Populate the data before sending response
     await league.populate('admin', 'name email');
     await league.populate('participants.userId', 'name email username');
+
+    // Broadcast participant added
+    broadcastToAll({
+      type: 'PARTICIPANT_ADDED',
+      leagueId: league._id,
+      participant: {
+        userId: req.user.id,
+        teamName: finalTeamName,
+        teamLogoUrl: preferredLogo
+      },
+      timestamp: new Date().toISOString()
+    });
 
     res.json({ 
       success: true, 
@@ -382,6 +416,14 @@ exports.generateMatches = async (req, res) => {
     league.status = 'active'; // League starts when matches are generated
     await league.save();
 
+    // Broadcast matches generated
+    broadcastToAll({
+      type: 'MATCHES_GENERATED',
+      leagueId: league._id,
+      matches: league.matches,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ 
       success: true, 
       message: "Matches generated successfully", 
@@ -453,6 +495,15 @@ exports.updateMatchResult = async (req, res) => {
     }
 
     await league.save();
+
+    // Broadcast match update
+    broadcastToAll({
+      type: 'MATCH_UPDATED',
+      match: match,
+      leagueId: league._id,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ 
       success: true, 
       message: "Match result updated and standings recalculated", 
@@ -504,6 +555,14 @@ exports.deleteLeague = async (req, res) => {
     }
 
     await League.findByIdAndDelete(req.params.id);
+
+    // Broadcast league deletion
+    broadcastToAll({
+      type: 'LEAGUE_DELETED',
+      leagueId: req.params.id,
+      timestamp: new Date().toISOString()
+    });
+
     res.json({ success: true, message: "League deleted successfully" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -549,6 +608,14 @@ exports.bulkJoinLeague = async (req, res) => {
 
     league.participants.push(...newParticipants);
     await league.save();
+
+    // Broadcast bulk participant addition
+    broadcastToAll({
+      type: 'PARTICIPANTS_ADDED',
+      leagueId: leagueId,
+      participants: newParticipants,
+      timestamp: new Date().toISOString()
+    });
 
     res.json({
       success: true,
