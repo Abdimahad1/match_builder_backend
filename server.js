@@ -47,6 +47,7 @@ wss.on('connection', (ws, request) => {
     
     // Store the connection
     connectedClients.set(userId, ws);
+    console.log(`👥 Total connected clients: ${connectedClients.size}`);
     
     // Send welcome message
     ws.send(JSON.stringify({
@@ -59,7 +60,7 @@ wss.on('connection', (ws, request) => {
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message);
-        console.log('📨 Received WebSocket message:', data);
+        console.log('📨 Received WebSocket message from user', userId, ':', data);
         
         // Handle different message types
         switch (data.type) {
@@ -79,7 +80,11 @@ wss.on('connection', (ws, request) => {
 
     // Handle connection close
     ws.on('close', (code, reason) => {
-      console.log(`🔌 WebSocket connection closed for user ${userId}:`, code, reason.toString());
+      console.log(`🔌 WebSocket connection closed for user ${userId}:`, {
+        code,
+        reason: reason.toString(),
+        connectedClients: connectedClients.size
+      });
       connectedClients.delete(userId);
     });
 

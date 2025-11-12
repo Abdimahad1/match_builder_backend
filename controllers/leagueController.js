@@ -1,8 +1,37 @@
 const League = require("../models/League");
 const User = require("../models/User").default;
 
-// Import WebSocket functions
-const { broadcastToAll, broadcastToUser, broadcastToUsers } = require("../server");
+// WebSocket functions (will be imported dynamically to avoid issues)
+let broadcastToAll, broadcastToUser, broadcastToUsers;
+
+// Dynamic import to handle WebSocket functions
+const loadWebSocketFunctions = async () => {
+  try {
+    if (process.env.NODE_ENV === 'production') {
+      // For production
+      const wsModule = await import('../server.js');
+      broadcastToAll = wsModule.broadcastToAll;
+      broadcastToUser = wsModule.broadcastToUser;
+      broadcastToUsers = wsModule.broadcastToUsers;
+    } else {
+      // For development
+      const wsModule = await import('../server.js');
+      broadcastToAll = wsModule.broadcastToAll;
+      broadcastToUser = wsModule.broadcastToUser;
+      broadcastToUsers = wsModule.broadcastToUsers;
+    }
+    console.log('✅ WebSocket functions loaded successfully');
+  } catch (error) {
+    console.error('❌ Error loading WebSocket functions:', error);
+    // Create fallback functions that don't crash
+    broadcastToAll = (msg) => console.log('📢 WebSocket broadcast (fallback):', msg.type);
+    broadcastToUser = (userId, msg) => console.log('📨 WebSocket user message (fallback) to:', userId);
+    broadcastToUsers = (userIds, msg) => console.log('👥 WebSocket multi-user message (fallback) to:', userIds.length, 'users');
+  }
+};
+
+// Load WebSocket functions when the module starts
+loadWebSocketFunctions();
 
 // Create League
 exports.createLeague = async (req, res) => {
@@ -434,72 +463,147 @@ exports.generateMatches = async (req, res) => {
   }
 };
 
+// Helper function to recalculate standings from all matches
+const recalculateStandings = async (league) => {
+  console.log(`🔄 Recalculating standings for league ${league.name}`);
+  
+  // Reset all team stats
+  league.teams.forEach(team => {
+    team.played = 0;
+    team.won = 0;
+    team.drawn = 0;
+    team.lost = 0;
+    team.goalsFor = 0;
+    team.goalsAgainst = 0;
+    team.goalDifference = 0;
+    team.points = 0;
+  });
+
+  // Process all played matches
+  league.matches.forEach(match => {
+    if (match.played) {
+      const homeTeam = league.teams.find(t => t.name === match.homeTeam);
+      const awayTeam = league.teams.find(t => t.name === match.awayTeam);
+
+      if (homeTeam && awayTeam) {
+        homeTeam.played++;
+        awayTeam.played++;
+
+        homeTeam.goalsFor += match.homeGoals;
+        awayTeam.goalsFor += match.awayGoals;
+
+        homeTeam.goalsAgainst += match.awayGoals;
+        awayTeam.goalsAgainst += match.homeGoals;
+
+        homeTeam.goalDifference = homeTeam.goalsFor - homeTeam.goalsAgainst;
+        awayTeam.goalDifference = awayTeam.goalsFor - awayTeam.goalsAgainst;
+
+        if (match.homeGoals > match.awayGoals) {
+          homeTeam.won++;
+          awayTeam.lost++;
+          homeTeam.points += 3;
+        } else if (match.awayGoals > match.homeGoals) {
+          awayTeam.won++;
+          homeTeam.lost++;
+          awayTeam.points += 3;
+        } else {
+          homeTeam.drawn++;
+          awayTeam.drawn++;
+          homeTeam.points++;
+          awayTeam.points++;
+        }
+      }
+    }
+  });
+
+  console.log(`✅ Standings recalculated`);
+};
+
 // Update match result
 exports.updateMatchResult = async (req, res) => {
   try {
     const { matchId } = req.params;
     const { homeGoals, awayGoals } = req.body;
 
-    const league = await League.findOne({ "matches._id": matchId });
+    console.log(`🔄 Updating match ${matchId} with score: ${homeGoals}-${awayGoals}`);
+
+    // Validate input
+    if (homeGoals === undefined || awayGoals === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "homeGoals and awayGoals are required" 
+      });
+    }
+
+    const homeGoalsInt = parseInt(homeGoals);
+    const awayGoalsInt = parseInt(awayGoals);
+
+    if (isNaN(homeGoalsInt) || isNaN(awayGoalsInt) || homeGoalsInt < 0 || awayGoalsInt < 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Goals must be valid non-negative numbers" 
+      });
+    }
+
+    // Find the league containing this match
+    const league = await League.findOne({ "matches._id": matchId })
+      .populate('admin', 'name email')
+      .populate('participants.userId', 'name email');
+
     if (!league) {
+      console.log(`❌ League not found for match ${matchId}`);
       return res.status(404).json({ 
         success: false, 
         message: "League not found" 
       });
     }
 
+    console.log(`✅ Found league: ${league.name}`);
+
     // Check if user is admin
-    if (league.admin.toString() !== req.user.id) {
+    if (league.admin._id.toString() !== req.user.id) {
       return res.status(403).json({ 
         success: false, 
         message: "Only admin can update match results" 
       });
     }
 
+    // Find and update the match
     const match = league.matches.id(matchId);
-    match.homeGoals = homeGoals;
-    match.awayGoals = awayGoals;
-    match.played = true;
-
-    // Update standings
-    const homeTeam = league.teams.find((t) => t.name === match.homeTeam);
-    const awayTeam = league.teams.find((t) => t.name === match.awayTeam);
-
-    if (homeTeam && awayTeam) {
-      homeTeam.played++;
-      awayTeam.played++;
-
-      homeTeam.goalsFor += homeGoals;
-      awayTeam.goalsFor += awayGoals;
-
-      homeTeam.goalsAgainst += awayGoals;
-      awayTeam.goalsAgainst += homeGoals;
-
-      homeTeam.goalDifference = homeTeam.goalsFor - homeTeam.goalsAgainst;
-      awayTeam.goalDifference = awayTeam.goalsFor - awayTeam.goalsAgainst;
-
-      if (homeGoals > awayGoals) {
-        homeTeam.won++;
-        awayTeam.lost++;
-        homeTeam.points += 3;
-      } else if (awayGoals > homeGoals) {
-        awayTeam.won++;
-        homeTeam.lost++;
-        awayTeam.points += 3;
-      } else {
-        homeTeam.drawn++;
-        awayTeam.drawn++;
-        homeTeam.points++;
-        awayTeam.points++;
-      }
+    if (!match) {
+      console.log(`❌ Match ${matchId} not found in league`);
+      return res.status(404).json({ 
+        success: false, 
+        message: "Match not found" 
+      });
     }
 
-    await league.save();
+    console.log(`✅ Found match: ${match.homeTeam} vs ${match.awayTeam}`);
 
-    // Broadcast match update
+    // Update match result
+    match.homeGoals = homeGoalsInt;
+    match.awayGoals = awayGoalsInt;
+    match.played = true;
+
+    // Update standings - always recalculate to ensure accuracy
+    await recalculateStandings(league);
+
+    await league.save();
+    console.log(`✅ Match result updated successfully`);
+
+    // Broadcast match update to all connected clients
     broadcastToAll({
       type: 'MATCH_UPDATED',
-      match: match,
+      match: {
+        _id: match._id,
+        homeTeam: match.homeTeam,
+        awayTeam: match.awayTeam,
+        homeGoals: match.homeGoals,
+        awayGoals: match.awayGoals,
+        played: match.played,
+        matchNumber: match.matchNumber,
+        roundNumber: match.roundNumber
+      },
       leagueId: league._id,
       timestamp: new Date().toISOString()
     });
@@ -509,8 +613,13 @@ exports.updateMatchResult = async (req, res) => {
       message: "Match result updated and standings recalculated", 
       data: league 
     });
+
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('❌ Error in updateMatchResult:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: err.message || "Internal server error while updating match result" 
+    });
   }
 };
 
