@@ -1,0 +1,562 @@
+const League = require("../models/League");
+const User = require("../models/User").default;
+
+// Create League
+exports.createLeague = async (req, res) => {
+  try {
+    const { name, description, startDate, endDate, maxParticipants, leagueLogoUrl } = req.body;
+    const sanitizedLogo =
+      typeof leagueLogoUrl === 'string' ? leagueLogoUrl.trim() : '';
+
+    const league = await League.create({
+      name,
+      description,
+      startDate,
+      endDate,
+      maxParticipants,
+      leagueLogoUrl: sanitizedLogo,
+      admin: req.user.id,
+      status: 'draft'
+    });
+    
+    res.json({ 
+      success: true, 
+      message: "League created successfully", 
+      data: league 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get all leagues
+exports.getLeagues = async (req, res) => {
+  try {
+    const leagues = await League.find()
+      .populate('admin', 'name email')
+      .populate('participants.userId', 'name email');
+    res.json({ success: true, data: leagues });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get user's leagues
+exports.getMyLeagues = async (req, res) => {
+  try {
+    const leagues = await League.find({
+      $or: [
+        { admin: req.user.id },
+        { 'participants.userId': req.user.id }
+      ]
+    })
+    .populate('admin', 'name email')
+    .populate('participants.userId', 'name email');
+    
+    res.json({ success: true, data: leagues });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Update League
+exports.updateLeague = async (req, res) => {
+  try {
+    const league = await League.findById(req.params.id);
+    
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    // Check if user is admin
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can update league" 
+      });
+    }
+
+    const updatePayload = { ...req.body };
+    if (typeof updatePayload.leagueLogoUrl === 'string') {
+      updatePayload.leagueLogoUrl = updatePayload.leagueLogoUrl.trim();
+    }
+
+    const updatedLeague = await League.findByIdAndUpdate(
+      req.params.id, 
+      updatePayload, 
+      { new: true, runValidators: true }
+    )
+      .populate('admin', 'name email')
+      .populate('participants.userId', 'name email');
+    
+    res.json({ 
+      success: true, 
+      message: "League updated successfully", 
+      data: updatedLeague 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Update standings
+exports.updateStandings = async (req, res) => {
+  try {
+    const { teams } = req.body;
+    const league = await League.findById(req.params.id);
+    
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    // Check if user is admin
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can update standings" 
+      });
+    }
+
+    league.teams = teams;
+    await league.save();
+    
+    res.json({ 
+      success: true, 
+      message: "Standings updated successfully", 
+      data: league 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Join League
+// Join League
+// In your leagueController.js - update the joinLeague function
+exports.joinLeague = async (req, res) => {
+  try {
+    const { joinCode, teamName, teamLogoUrl } = req.body;
+    
+    if (!joinCode) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Join code is required" 
+      });
+    }
+
+    const league = await League.findOne({ joinCode: joinCode.toUpperCase() });
+    
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found with this join code" 
+      });
+    }
+
+    // Check if league can be joined
+    if (league.status !== 'draft') {
+      if (league.status === 'active') {
+        return res.status(400).json({ 
+          success: false, 
+          message: `This league is currently ongoing. It will end on ${new Date(league.endDate).toLocaleDateString()}. You cannot join ongoing leagues.` 
+        });
+      } else if (league.status === 'completed') {
+        return res.status(400).json({ 
+          success: false, 
+          message: "This league has already ended. You cannot join completed leagues." 
+        });
+      }
+    }
+
+    // Check if league is full
+    if (league.participants.length >= league.maxParticipants) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "League is full" 
+      });
+    }
+
+    // Check if user already joined
+    const alreadyJoined = league.participants.some(
+      p => p.userId.toString() === req.user.id
+    );
+    
+    if (alreadyJoined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "You have already joined this league" 
+      });
+    }
+
+    // AUTO-FETCH USERNAME AND USE AS TEAM NAME
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+
+    // Use username as team name (you can customize this logic)
+    const autoTeamName = teamName && teamName.trim() !== '' 
+      ? teamName.trim() 
+      : user.username;
+    const preferredLogo = typeof teamLogoUrl === 'string' && teamLogoUrl.trim() !== ''
+      ? teamLogoUrl.trim()
+      : (user.settings?.selectedTeam?.logoUrl || '');
+
+    // Check if team name is already taken in this league
+    const teamNameTaken = league.participants.some(
+      p => p.teamName.toLowerCase() === autoTeamName.toLowerCase()
+    );
+    
+    let finalTeamName = autoTeamName;
+    if (teamNameTaken) {
+      // If team name is taken, append a number to make it unique
+      let uniqueTeamName = autoTeamName;
+      let counter = 1;
+      while (league.participants.some(p => p.teamName.toLowerCase() === uniqueTeamName.toLowerCase())) {
+        uniqueTeamName = `${autoTeamName}${counter}`;
+        counter++;
+      }
+      finalTeamName = uniqueTeamName;
+    }
+
+    // Add participant with the resolved team name and logo
+    league.participants.push({
+      userId: req.user.id,
+      teamName: finalTeamName,
+      teamLogoUrl: preferredLogo,
+      status: 'approved'
+    });
+
+    // Update existing standings team entry if present
+    const existingTeam = league.teams?.find(
+      t => typeof t.name === 'string' && t.name.toLowerCase() === finalTeamName.toLowerCase()
+    );
+    if (existingTeam) {
+      existingTeam.logo = preferredLogo || existingTeam.logo;
+    }
+
+    await league.save();
+    
+    // Populate the data before sending response
+    await league.populate('admin', 'name email');
+    await league.populate('participants.userId', 'name email username');
+
+    res.json({ 
+      success: true, 
+      message: "Successfully joined league", 
+      data: league 
+    });
+  } catch (err) {
+    console.error("Join league error:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: err.message 
+    });
+  }
+};
+
+// Generate matches from participants
+exports.generateMatches = async (req, res) => {
+  try {
+    const league = await League.findById(req.params.id);
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    // Check if user is admin
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can generate matches" 
+      });
+    }
+
+    // Check if league has started
+    if (league.status !== 'draft') {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot generate matches for a league that has already started or ended" 
+      });
+    }
+
+    const participants = league.participants.filter(p => p.status === 'approved');
+    
+    if (participants.length < 2) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Need at least 2 approved participants to generate matches" 
+      });
+    }
+
+    // Create teams from participants
+    const teams = participants.map(participant => ({
+      name: participant.teamName,
+      logo: participant.teamLogoUrl && participant.teamLogoUrl.trim() !== ''
+        ? participant.teamLogoUrl
+        : `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(participant.teamName)}&backgroundColor=yellow,orange,red,blue,green&size=80`,
+      played: 0,
+      won: 0,
+      drawn: 0,
+      lost: 0,
+      goalsFor: 0,
+      goalsAgainst: 0,
+      goalDifference: 0,
+      points: 0,
+    }));
+
+    // Round-robin tournament: All teams play in each round
+    const teamNames = teams.map(t => t.name);
+    const numTeams = teamNames.length;
+    
+    // Calculate number of rounds (7 rounds or even number based on team count)
+    // For 10 teams: 7 rounds means each team plays 7 matches
+    const maxRounds = numTeams >= 10 ? 7 : (numTeams % 2 === 0 ? numTeams - 1 : numTeams);
+    
+    // Generate matches with round-robin pairing algorithm
+    const matches = [];
+    let matchNumber = 1;
+    
+    // Round-robin pairing: rotate teams to ensure unique pairings each round
+    // Use a proper round-robin tournament algorithm
+    for (let round = 1; round <= maxRounds; round++) {
+      const roundMatches = [];
+      
+      // Create a rotated array for this round using round-robin algorithm
+      const rotated = [...teamNames];
+      
+      // Rotate for round-robin: keep first team fixed, rotate others
+      if (round > 1) {
+        // Move first team to end
+        const first = rotated.shift();
+        rotated.push(first);
+        
+        // Additional rotation based on round number for better distribution
+        const additionalRotations = (round - 1) % (numTeams - 1);
+        for (let r = 0; r < additionalRotations; r++) {
+          const second = rotated.shift();
+          rotated.push(second);
+        }
+        
+        // Put first team back at the beginning
+        rotated.unshift(rotated.pop());
+      }
+      
+      // Pair teams: first with last, second with second-last, etc.
+      for (let i = 0; i < Math.floor(rotated.length / 2); i++) {
+        const home = rotated[i];
+        const away = rotated[rotated.length - 1 - i];
+        
+        roundMatches.push({ home, away });
+      }
+      
+      // Add matches to the main matches array with numbering
+      roundMatches.forEach(match => {
+        matches.push({
+          homeTeam: match.home,
+          awayTeam: match.away,
+          homeGoals: 0,
+          awayGoals: 0,
+          played: false,
+          matchNumber: matchNumber++,
+          roundNumber: round,
+          groupName: "" // No groups in round-robin
+        });
+      });
+    }
+
+    // Update league with teams and matches
+    league.teams = teams;
+    league.matches = matches;
+    league.status = 'active'; // League starts when matches are generated
+    await league.save();
+
+    res.json({ 
+      success: true, 
+      message: "Matches generated successfully", 
+      data: league 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Update match result
+exports.updateMatchResult = async (req, res) => {
+  try {
+    const { matchId } = req.params;
+    const { homeGoals, awayGoals } = req.body;
+
+    const league = await League.findOne({ "matches._id": matchId });
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    // Check if user is admin
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can update match results" 
+      });
+    }
+
+    const match = league.matches.id(matchId);
+    match.homeGoals = homeGoals;
+    match.awayGoals = awayGoals;
+    match.played = true;
+
+    // Update standings
+    const homeTeam = league.teams.find((t) => t.name === match.homeTeam);
+    const awayTeam = league.teams.find((t) => t.name === match.awayTeam);
+
+    if (homeTeam && awayTeam) {
+      homeTeam.played++;
+      awayTeam.played++;
+
+      homeTeam.goalsFor += homeGoals;
+      awayTeam.goalsFor += awayGoals;
+
+      homeTeam.goalsAgainst += awayGoals;
+      awayTeam.goalsAgainst += homeGoals;
+
+      homeTeam.goalDifference = homeTeam.goalsFor - homeTeam.goalsAgainst;
+      awayTeam.goalDifference = awayTeam.goalsFor - awayTeam.goalsAgainst;
+
+      if (homeGoals > awayGoals) {
+        homeTeam.won++;
+        awayTeam.lost++;
+        homeTeam.points += 3;
+      } else if (awayGoals > homeGoals) {
+        awayTeam.won++;
+        homeTeam.lost++;
+        awayTeam.points += 3;
+      } else {
+        homeTeam.drawn++;
+        awayTeam.drawn++;
+        homeTeam.points++;
+        awayTeam.points++;
+      }
+    }
+
+    await league.save();
+    res.json({ 
+      success: true, 
+      message: "Match result updated and standings recalculated", 
+      data: league 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get league by join code
+exports.getLeagueByCode = async (req, res) => {
+  try {
+    const { code } = req.params;
+    const league = await League.findOne({ joinCode: code })
+      .populate('admin', 'name email')
+      .populate('participants.userId', 'name email');
+    
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    res.json({ success: true, data: league });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Delete League
+exports.deleteLeague = async (req, res) => {
+  try {
+    const league = await League.findById(req.params.id);
+    
+    if (!league) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "League not found" 
+      });
+    }
+
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can delete league" 
+      });
+    }
+
+    await League.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: "League deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// BULK JOIN LEAGUE (Admin adds multiple teams manually)
+exports.bulkJoinLeague = async (req, res) => {
+  try {
+    const { leagueId } = req.params;
+    const { participants } = req.body;
+
+    const league = await League.findById(leagueId);
+    if (!league) {
+      return res.status(404).json({ success: false, message: "League not found" });
+    }
+
+    // Only admin can bulk add
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Only admin can bulk add participants" });
+    }
+
+    if (!Array.isArray(participants) || participants.length === 0) {
+      return res.status(400).json({ success: false, message: "Participants array required" });
+    }
+
+    const remainingSpots = league.maxParticipants - league.participants.length;
+    if (participants.length > remainingSpots) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Only ${remainingSpots} spots left in league`
+      });
+    }
+
+    // Filter and map new participants
+    const newParticipants = participants.map(p => ({
+      userId: p.userId,
+      teamName: p.teamName,
+      teamLogoUrl: p.teamLogoUrl || '',
+      status: p.status || "approved",
+      joinedAt: new Date()
+    }));
+
+    league.participants.push(...newParticipants);
+    await league.save();
+
+    res.json({
+      success: true,
+      message: `${newParticipants.length} participants added successfully`,
+      data: league
+    });
+  } catch (err) {
+    console.error("Bulk join error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
