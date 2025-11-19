@@ -807,32 +807,69 @@ exports.getCelebratingWinners = async (req, res) => {
 };
 
 // Set league winner manually (admin only)
+// Set league winner manually (admin only)
 exports.setLeagueWinner = async (req, res) => {
   try {
     const { leagueId } = req.params;
-    const { teamName } = req.body;
+    const { teamName, teamLogo } = req.body;
+
+    console.log(`🏆 Setting winner for league ${leagueId}, team: ${teamName}`);
+    console.log(`👤 Request user ID: ${req.user.id}`);
+    console.log(`🔍 Request user object:`, req.user);
 
     const league = await League.findById(leagueId);
     if (!league) {
       return res.status(404).json({ success: false, message: "League not found" });
     }
 
-    // Check if user is admin
-    if (league.admin.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, message: "Only admin can set winner" });
+    console.log(`🏈 League admin ID: ${league.admin}`);
+    console.log(`🔍 League object:`, {
+      _id: league._id,
+      name: league.name,
+      admin: league.admin,
+      adminType: typeof league.admin
+    });
+
+    // CORRECTED: Compare ObjectId with ObjectId or string with string
+    const leagueAdminId = league.admin.toString(); // Convert ObjectId to string
+    const requestUserId = req.user._id?.toString() || req.user.id?.toString();
+    
+    console.log(`🔐 Admin check - League Admin: ${leagueAdminId} (${typeof leagueAdminId}), Request User: ${requestUserId} (${typeof requestUserId})`);
+    
+    if (leagueAdminId !== requestUserId) {
+      console.log(`❌ Admin check failed: User is not the league admin`);
+      console.log(`📊 Comparison: ${leagueAdminId} !== ${requestUserId}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only admin can set winner",
+        details: {
+          leagueAdmin: leagueAdminId,
+          currentUser: requestUserId,
+          leagueId: leagueId,
+          leagueName: league.name
+        }
+      });
     }
 
+    console.log(`✅ Admin check passed - User is the league admin`);
+
+    // Find the winner participant
     const winnerParticipant = league.participants.find(p => p.teamName === teamName);
     if (!winnerParticipant) {
-      return res.status(404).json({ success: false, message: "Team not found in league" });
+      return res.status(404).json({ 
+        success: false, 
+        message: "Team not found in league participants" 
+      });
     }
 
+    // Find the winner team in standings
     const winnerTeam = league.teams.find(t => t.name === teamName);
-
+    
+    // Set the winner
     league.winner = {
       teamName: teamName,
       userId: winnerParticipant.userId,
-      teamLogo: winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
+      teamLogo: teamLogo || winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
       awardedAt: new Date()
     };
     
@@ -844,20 +881,24 @@ exports.setLeagueWinner = async (req, res) => {
     league.previousWinners.push({
       teamName: teamName,
       userId: winnerParticipant.userId,
-      teamLogo: winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
+      teamLogo: teamLogo || winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
       awardedAt: new Date(),
       season: `${new Date(league.startDate).getFullYear()}-${new Date(league.endDate).getFullYear()}`
     });
 
     await league.save();
 
+    console.log(`✅ Winner set successfully: ${teamName}`);
+
     // Broadcast winner celebration
-    broadcastToAll({
-      type: 'LEAGUE_WINNER_CROWNED',
-      league: league,
-      winner: league.winner,
-      timestamp: new Date().toISOString()
-    });
+    if (typeof broadcastToAll === 'function') {
+      broadcastToAll({
+        type: 'LEAGUE_WINNER_CROWNED',
+        league: league,
+        winner: league.winner,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     res.json({ 
       success: true, 
@@ -865,7 +906,11 @@ exports.setLeagueWinner = async (req, res) => {
       data: league 
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('❌ Error in setLeagueWinner:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: err.message || "Internal server error while setting winner" 
+    });
   }
 };
 
