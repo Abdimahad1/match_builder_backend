@@ -516,6 +516,54 @@ const recalculateStandings = async (league) => {
     }
   });
 
+  // Check if league should be completed and winner crowned
+  const totalMatches = league.matches.length;
+  const playedMatches = league.matches.filter(m => m.played).length;
+  const completionPercentage = (playedMatches / totalMatches) * 100;
+
+  // Auto-complete league if 95% matches are played and determine winner
+  if (completionPercentage >= 95 && league.status === 'active') {
+    const sortedTeams = [...league.teams].sort((a, b) => {
+      const pointsDiff = b.points - a.points;
+      if (pointsDiff !== 0) return pointsDiff;
+      return b.goalDifference - a.goalDifference;
+    });
+
+    // Check if winner is mathematically certain
+    if (sortedTeams.length >= 2) {
+      const leader = sortedTeams[0];
+      const second = sortedTeams[1];
+      const remainingMatches = totalMatches - playedMatches;
+      const maxPossiblePointsForSecond = second.points + (remainingMatches * 3);
+      
+      // If second place cannot catch up, crown the winner
+      if (leader.points > maxPossiblePointsForSecond && !league.winner.teamName) {
+        const winnerParticipant = league.participants.find(p => p.teamName === leader.name);
+        
+        league.winner = {
+          teamName: leader.name,
+          userId: winnerParticipant?.userId,
+          teamLogo: leader.logo || winnerParticipant?.teamLogoUrl || '',
+          awardedAt: new Date()
+        };
+        
+        league.isCelebrating = true;
+        league.celebrationEnds = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+        league.status = 'completed';
+
+        // Broadcast the winner
+        broadcastToAll({
+          type: 'LEAGUE_WINNER_CROWNED',
+          league: league,
+          winner: league.winner,
+          timestamp: new Date().toISOString()
+        });
+
+        console.log(`🏆 ${leader.name} crowned as winner of ${league.name}!`);
+      }
+    }
+  }
+
   console.log(`✅ Standings recalculated`);
 };
 
@@ -733,6 +781,115 @@ exports.bulkJoinLeague = async (req, res) => {
     });
   } catch (err) {
     console.error("Bulk join error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get celebrating winners
+exports.getCelebratingWinners = async (req, res) => {
+  try {
+    const celebratingLeagues = await League.find({
+      isCelebrating: true,
+      celebrationEnds: { $gt: new Date() },
+      'winner.teamName': { $exists: true, $ne: '' }
+    })
+    .populate('winner.userId', 'name username')
+    .populate('admin', 'name username')
+    .select('name winner celebrationEnds leagueLogoUrl description');
+    
+    res.json({ 
+      success: true, 
+      data: celebratingLeagues 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Set league winner manually (admin only)
+exports.setLeagueWinner = async (req, res) => {
+  try {
+    const { leagueId } = req.params;
+    const { teamName } = req.body;
+
+    const league = await League.findById(leagueId);
+    if (!league) {
+      return res.status(404).json({ success: false, message: "League not found" });
+    }
+
+    // Check if user is admin
+    if (league.admin.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Only admin can set winner" });
+    }
+
+    const winnerParticipant = league.participants.find(p => p.teamName === teamName);
+    if (!winnerParticipant) {
+      return res.status(404).json({ success: false, message: "Team not found in league" });
+    }
+
+    const winnerTeam = league.teams.find(t => t.name === teamName);
+
+    league.winner = {
+      teamName: teamName,
+      userId: winnerParticipant.userId,
+      teamLogo: winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
+      awardedAt: new Date()
+    };
+    
+    league.isCelebrating = true;
+    league.celebrationEnds = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000); // 3 days
+    league.status = 'completed';
+    
+    // Add to previous winners
+    league.previousWinners.push({
+      teamName: teamName,
+      userId: winnerParticipant.userId,
+      teamLogo: winnerTeam?.logo || winnerParticipant.teamLogoUrl || '',
+      awardedAt: new Date(),
+      season: `${new Date(league.startDate).getFullYear()}-${new Date(league.endDate).getFullYear()}`
+    });
+
+    await league.save();
+
+    // Broadcast winner celebration
+    broadcastToAll({
+      type: 'LEAGUE_WINNER_CROWNED',
+      league: league,
+      winner: league.winner,
+      timestamp: new Date().toISOString()
+    });
+
+    res.json({ 
+      success: true, 
+      message: `${teamName} crowned as league winner! Celebration started for 3 days.`,
+      data: league 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get all previous winners
+exports.getPreviousWinners = async (req, res) => {
+  try {
+    const { leagueId } = req.params;
+    
+    const league = await League.findById(leagueId)
+      .select('previousWinners name')
+      .populate('previousWinners.userId', 'name username');
+    
+    if (!league) {
+      return res.status(404).json({ success: false, message: "League not found" });
+    }
+
+    res.json({ 
+      success: true, 
+      data: {
+        leagueName: league.name,
+        previousWinners: league.previousWinners
+      }
+    });
+  } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };

@@ -13,10 +13,10 @@ const {
   joinLeague,
   getLeagueByCode,
   bulkJoinLeague,
+  getCelebratingWinners,
+  setLeagueWinner,
+  getPreviousWinners
 } = require("../controllers/leagueController");
-
-// Import WebSocket functions (adjust path as needed)
-const { broadcastToAll, broadcastToUser, broadcastToUsers } = require("../server");
 
 // League routes
 router.post("/", protect, createLeague);
@@ -34,5 +34,10 @@ router.post("/:id/generate-matches", protect, generateMatches);
 // Extended
 router.put("/:id/standings", protect, updateStandings);
 router.put("/match/:matchId/result", protect, updateMatchResult);
+
+// Winner celebration routes
+router.get("/winners/celebrating", getCelebratingWinners);
+router.post("/:leagueId/set-winner", protect, setLeagueWinner);
+router.get("/:leagueId/previous-winners", getPreviousWinners);
 
 module.exports = router;

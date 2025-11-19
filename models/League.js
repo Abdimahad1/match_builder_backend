@@ -47,6 +47,23 @@ const leagueSchema = new mongoose.Schema({
   status: { type: String, enum: ['draft', 'active', 'completed', 'cancelled'], default: 'draft' },
   joinCode: { type: String, unique: true },
   createdAt: { type: Date, default: Date.now },
+  
+  // Winner celebration fields
+  winner: {
+    teamName: { type: String, default: '' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    teamLogo: { type: String, default: '' },
+    awardedAt: { type: Date }
+  },
+  isCelebrating: { type: Boolean, default: false },
+  celebrationEnds: { type: Date },
+  previousWinners: [{
+    teamName: { type: String },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    teamLogo: { type: String },
+    awardedAt: { type: Date },
+    season: { type: String }
+  }]
 });
 
 // Generate join code before saving
@@ -67,6 +84,44 @@ leagueSchema.pre('save', function(next) {
     } else if (now > this.endDate) {
       this.status = 'completed';
     }
+  }
+  
+  // Auto-detect winner when league completes
+  if (this.status === 'completed' && !this.winner.teamName && this.teams && this.teams.length > 0) {
+    const sortedTeams = [...this.teams].sort((a, b) => {
+      const pointsDiff = b.points - a.points;
+      if (pointsDiff !== 0) return pointsDiff;
+      return b.goalDifference - a.goalDifference;
+    });
+    
+    if (sortedTeams.length > 0 && sortedTeams[0].points > 0) {
+      const winnerTeam = sortedTeams[0];
+      const winnerParticipant = this.participants.find(p => p.teamName === winnerTeam.name);
+      
+      this.winner = {
+        teamName: winnerTeam.name,
+        userId: winnerParticipant?.userId,
+        teamLogo: winnerTeam.logo || winnerParticipant?.teamLogoUrl || '',
+        awardedAt: new Date()
+      };
+      
+      this.isCelebrating = true;
+      this.celebrationEnds = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000); // 3 days
+      
+      // Add to previous winners
+      this.previousWinners.push({
+        teamName: winnerTeam.name,
+        userId: winnerParticipant?.userId,
+        teamLogo: winnerTeam.logo || winnerParticipant?.teamLogoUrl || '',
+        awardedAt: new Date(),
+        season: `${new Date(this.startDate).getFullYear()}-${new Date(this.endDate).getFullYear()}`
+      });
+    }
+  }
+  
+  // Check if celebration period has ended
+  if (this.isCelebrating && this.celebrationEnds && new Date() > this.celebrationEnds) {
+    this.isCelebrating = false;
   }
   
   next();
