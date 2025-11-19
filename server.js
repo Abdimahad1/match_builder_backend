@@ -155,13 +155,46 @@ const broadcastToUsers = (userIds, message) => {
   console.log(`📨 Message sent to ${sentCount} users`);
 };
 
-// Simple CORS configuration
-app.use(cors({
-  origin: "*", // Allow all origins
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
-}));
+// ALLOW ALL ORIGINS CORS Configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow ALL origins - including mobile apps, web apps, everything
+    callback(null, true);
+  },
+  credentials: true, // Allow cookies and authentication headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Request-ID',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+    'Cache-Control',
+    'Pragma',
+    'If-Modified-Since',
+    'User-Agent'
+  ],
+  exposedHeaders: [
+    'X-Response-Time',
+    'X-Request-ID',
+    'Content-Length',
+    'Content-Type',
+    'Date',
+    'ETag'
+  ],
+  optionsSuccessStatus: 204, // Some legacy browsers choke on 204
+  preflightContinue: false,
+  maxAge: 86400 // 24 hours for preflight cache
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Explicitly handle preflight requests for all routes
+app.options('*', cors(corsOptions));
 
 // Body parser with limits
 app.use(express.json({ 
@@ -176,13 +209,18 @@ app.use(express.urlencoded({
 app.use((req, res, next) => {
   const start = Date.now();
   
+  // Add CORS headers to all responses
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-ID, X-Requested-With, Accept, Origin');
+  
   // Store original end method
   const originalEnd = res.end;
   
   res.end = function(chunk, encoding) {
     const duration = Date.now() - start;
     res.setHeader('X-Response-Time', `${duration}ms`);
-    console.log(`${req.method} ${req.originalUrl} - ${duration}ms`);
+    console.log(`${req.method} ${req.originalUrl} - ${duration}ms - Origin: ${req.headers.origin || 'No Origin'}`);
     
     // Call original end method
     originalEnd.call(this, chunk, encoding);
@@ -209,7 +247,8 @@ app.get('/api/ws-health', (req, res) => {
     success: true,
     message: 'WebSocket server is running',
     connectedClients: connectedClients.size,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    allowedOrigins: 'ALL (CORS enabled for all domains)'
   });
 });
 
@@ -246,6 +285,18 @@ app.get('/api/ws-test/:userId', (req, res) => {
   });
 });
 
+// CORS test endpoint
+app.get('/api/cors-test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'CORS is working! This API accepts requests from ALL origins including mobile apps and web apps.',
+    yourOrigin: req.headers.origin || 'No Origin Header (Mobile App?)',
+    timestamp: new Date().toISOString(),
+    credentials: 'Allowed',
+    methods: 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+  });
+});
+
 // Basic route
 app.get('/', (req, res) => {
   res.json({
@@ -254,7 +305,9 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     websocket: true,
-    connectedClients: connectedClients.size
+    connectedClients: connectedClients.size,
+    cors: 'ENABLED FOR ALL ORIGINS',
+    note: 'This API accepts requests from any domain, including mobile apps and web applications'
   });
 });
 
@@ -266,7 +319,8 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     connectedClients: connectedClients.size,
-    memoryUsage: process.memoryUsage()
+    memoryUsage: process.memoryUsage(),
+    cors: 'Enabled for all origins'
   });
 });
 
@@ -274,17 +328,24 @@ app.get('/api/health', (req, res) => {
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: `Route ${req.originalUrl} not found`
+    message: `Route ${req.originalUrl} not found`,
+    allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
   });
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Error:', error);
+  
+  // Ensure CORS headers are present even on errors
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   res.status(500).json({
     success: false,
     message: 'Internal server error',
-    error: process.env.NODE_ENV === 'production' ? {} : error.message
+    error: process.env.NODE_ENV === 'production' ? {} : error.message,
+    cors: 'Enabled - this error is not CORS related'
   });
 });
 
@@ -292,10 +353,11 @@ const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
-  console.log(`📡 CORS enabled for ALL origins`);
+  console.log(`📡 CORS enabled for ALL ORIGINS (including mobile apps and web apps)`);
   console.log(`🔌 WebSocket server running on path /ws`);
   console.log(`⚡ Performance optimizations enabled`);
   console.log(`👥 Currently ${connectedClients.size} connected WebSocket clients`);
+  console.log(`🌍 API will accept requests from ANY domain`);
 });
 
 // Cleanup function for graceful shutdown
