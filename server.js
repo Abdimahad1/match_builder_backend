@@ -155,46 +155,13 @@ const broadcastToUsers = (userIds, message) => {
   console.log(`📨 Message sent to ${sentCount} users`);
 };
 
-// ALLOW ALL ORIGINS CORS Configuration
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow ALL origins - including mobile apps, web apps, everything
-    callback(null, true);
-  },
-  credentials: true, // Allow cookies and authentication headers
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Request-ID',
-    'X-Requested-With',
-    'Accept',
-    'Origin',
-    'Access-Control-Request-Method',
-    'Access-Control-Request-Headers',
-    'Cache-Control',
-    'Pragma',
-    'If-Modified-Since',
-    'User-Agent'
-  ],
-  exposedHeaders: [
-    'X-Response-Time',
-    'X-Request-ID',
-    'Content-Length',
-    'Content-Type',
-    'Date',
-    'ETag'
-  ],
-  optionsSuccessStatus: 204, // Some legacy browsers choke on 204
-  preflightContinue: false,
-  maxAge: 86400 // 24 hours for preflight cache
-};
-
-// Apply CORS middleware
-app.use(cors(corsOptions));
-
-// Explicitly handle preflight requests for all routes
-app.options('*', cors(corsOptions));
+// SIMPLIFIED CORS Configuration - ALLOW ALL ORIGINS
+app.use(cors({
+  origin: true, // This automatically reflects the request origin
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
+}));
 
 // Body parser with limits
 app.use(express.json({ 
@@ -205,16 +172,22 @@ app.use(express.urlencoded({
   limit: '10mb' 
 }));
 
-// Fixed response time header middleware
+// CORS headers middleware - manually set headers for all responses
 app.use((req, res, next) => {
   const start = Date.now();
   
-  // Add CORS headers to all responses
+  // Set CORS headers for all responses
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-ID, X-Requested-With, Accept, Origin');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-ID');
   
-  // Store original end method
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send();
+  }
+  
+  // Store original end method for response time logging
   const originalEnd = res.end;
   
   res.end = function(chunk, encoding) {
