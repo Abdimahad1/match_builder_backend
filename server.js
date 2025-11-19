@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import compression from 'compression'; // ADD THIS
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import jwt from 'jsonwebtoken';
@@ -13,7 +14,7 @@ dotenv.config();
 connectDB();
 
 const app = express();
-const server = createServer(app); // HTTP server for both Express + WebSockets
+const server = createServer(app);
 
 // WebSocket server
 const wss = new WebSocketServer({
@@ -28,7 +29,6 @@ const connectedClients = new Map();
 wss.on('connection', (ws, request) => {
   console.log('🔌 New WebSocket connection attempt');
 
-  // Extract token
   const url = new URL(request.url, `http://${request.headers.host}`);
   const token = url.searchParams.get('token');
 
@@ -43,47 +43,33 @@ wss.on('connection', (ws, request) => {
     const userId = decoded.id;
 
     console.log('✅ WS authenticated:', userId);
-
-    // Store client
     connectedClients.set(userId, ws);
     console.log('👥 Total WebSocket clients:', connectedClients.size);
 
-    // Welcome message
-    ws.send(
-      JSON.stringify({
-        type: 'CONNECTION_ESTABLISHED',
-        message: 'WebSocket connection established',
-        timestamp: new Date().toISOString(),
-      })
-    );
+    ws.send(JSON.stringify({
+      type: 'CONNECTION_ESTABLISHED',
+      message: 'WebSocket connection established',
+      timestamp: new Date().toISOString(),
+    }));
 
-    // Handle incoming messages
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message);
         console.log(`📨 WS message from ${userId}:`, data);
 
-        switch (data.type) {
-          case 'PING':
-            ws.send(
-              JSON.stringify({
-                type: 'PONG',
-                timestamp: new Date().toISOString(),
-              })
-            );
-            break;
-
-          default:
-            console.log('Unknown WS message type:', data.type);
+        if (data.type === 'PING') {
+          ws.send(JSON.stringify({
+            type: 'PONG',
+            timestamp: new Date().toISOString(),
+          }));
         }
       } catch (err) {
         console.error('WS Error parsing message:', err);
       }
     });
 
-    // Remove client on close
-    ws.on('close', (code, reason) => {
-      console.log(`🔌 WS closed for ${userId}`, { code, reason: reason.toString() });
+    ws.on('close', () => {
+      console.log(`🔌 WS closed for ${userId}`);
       connectedClients.delete(userId);
     });
 
@@ -133,39 +119,20 @@ const broadcastToUser = (userId, message) => {
   }
 };
 
-const broadcastToUsers = (userIds, message) => {
-  const messageString = JSON.stringify(message);
-  let count = 0;
-
-  userIds.forEach((userId) => {
-    const ws = connectedClients.get(userId);
-    if (ws && ws.readyState === ws.OPEN) {
-      try {
-        ws.send(messageString);
-        count++;
-      } catch (err) {
-        console.error(`Broadcast error to ${userId}:`, err);
-        connectedClients.delete(userId);
-      }
-    }
-  });
-
-  console.log(`📨 Message sent to ${count} users`);
-};
-
 // ----------------------
-// MIDDLEWARE
+// MIDDLEWARE - IMPROVED
 // ----------------------
 
-// Allow ALL ORIGINS (perfect for mobile and web)
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  })
-);
+// Response compression for faster transfers
+app.use(compression());
+
+// CORS - Allow ALL ORIGINS
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+}));
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -175,18 +142,26 @@ app.use(express.urlencoded({ extended: false, limit: '10mb' }));
 app.use((req, res, next) => {
   const start = Date.now();
 
+  // Enhanced CORS headers
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Request-ID');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Request-ID,Accept');
+  res.header('Access-Control-Expose-Headers', 'X-Response-Time');
+  
+  // Security headers
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
 
-  if (req.method === 'OPTIONS') return res.status(204).send();
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send();
+  }
 
   const originalEnd = res.end;
   res.end = function (chunk, encoding) {
     const duration = Date.now() - start;
     res.setHeader('X-Response-Time', `${duration}ms`);
-    console.log(`${req.method} ${req.originalUrl} - ${duration}ms`);
+    console.log(`${req.method} ${req.originalUrl} - ${duration}ms - Origin: ${req.headers.origin || 'direct'}`);
 
     originalEnd.call(this, chunk, encoding);
   };
@@ -194,9 +169,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Cache GET requests (5 minutes)
+// Cache GET requests
 app.use((req, res, next) => {
-  if (req.method === 'GET') res.set('Cache-Control', 'public, max-age=300');
+  if (req.method === 'GET') {
+    res.set('Cache-Control', 'public, max-age=300');
+  }
   next();
 });
 
@@ -207,38 +184,23 @@ app.use((req, res, next) => {
 app.use('/api/auth', (await import('./routes/authRoutes.js')).default);
 app.use('/api/leagues', (await import('./routes/leagueRoutes.js')).default);
 
-// WebSocket health
+// Health endpoints
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Server healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    connectedClients: connectedClients.size,
+  });
+});
+
 app.get('/api/ws-health', (req, res) => {
   res.json({
     success: true,
-    message: 'WebSocket is running',
+    message: 'WebSocket running',
     connectedClients: connectedClients.size,
     timestamp: new Date().toISOString(),
-  });
-});
-
-// WS test message to all users
-app.get('/api/ws-test', (req, res) => {
-  broadcastToAll({
-    type: 'TEST_MESSAGE',
-    message: 'Broadcast test message from server',
-    timestamp: new Date().toISOString(),
-  });
-
-  res.json({ success: true });
-});
-
-// WS test message to one user
-app.get('/api/ws-test/:userId', (req, res) => {
-  broadcastToUser(req.params.userId, {
-    type: 'TEST_MESSAGE',
-    message: `Test WS message to user ${req.params.userId}`,
-    timestamp: new Date().toISOString(),
-  });
-
-  res.json({
-    success: true,
-    userConnected: connectedClients.has(req.params.userId),
   });
 });
 
@@ -247,7 +209,8 @@ app.get('/api/cors-test', (req, res) => {
   res.json({
     success: true,
     message: 'CORS working for ALL origins',
-    yourOrigin: req.headers.origin,
+    yourOrigin: req.headers.origin || 'No origin',
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -258,16 +221,7 @@ app.get('/', (req, res) => {
     message: 'Face2Face League API running',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
-  });
-});
-
-// Health Check
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'OK',
-    uptime: process.uptime(),
-    connectedClients: connectedClients.size,
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -303,16 +257,13 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔌 WebSocket path: /ws`);
   console.log(`🌍 CORS: ALL ORIGINS ALLOWED`);
+  console.log(`⚡ Compression: ENABLED`);
 });
 
 // Graceful shutdown
 const shutDown = () => {
   console.log('🛑 Shutting down gracefully...');
-
-  connectedClients.forEach((ws, userId) => {
-    ws.close(1001, 'Server shutting down');
-  });
-
+  connectedClients.forEach((ws) => ws.close(1001, 'Server shutting down'));
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
@@ -322,5 +273,4 @@ const shutDown = () => {
 process.on('SIGTERM', shutDown);
 process.on('SIGINT', shutDown);
 
-// Export broadcast functions
-export { broadcastToAll, broadcastToUser, broadcastToUsers };
+export { broadcastToAll, broadcastToUser };
