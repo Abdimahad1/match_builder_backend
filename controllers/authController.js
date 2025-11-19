@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import League from '../models/League.js';
 import { generateToken } from '../middleware/authMiddleware.js';
+import bcrypt from 'bcryptjs';
 
 // Helper function to generate random password
 const generatePassword = (length = 8) => {
@@ -19,27 +20,34 @@ const generateUserCode = async () => {
   const month = String(today.getMonth() + 1).padStart(2, '0');
   const year = String(today.getFullYear()).slice(-2);
 
-  // Count users created today
+  // Count users created today with timeout
   const count = await User.countDocuments({
     createdAt: {
       $gte: new Date(today.getFullYear(), today.getMonth(), today.getDate())
     }
-  });
+  }).maxTimeMS(3000);
 
-  const increment = String.fromCharCode(65 + count); // A, B, C...
+  const increment = String.fromCharCode(65 + count);
   return `F${day}${month}${year}${increment}`;
 };
 
-// @desc    Register new user
+// @desc    Register new user - OPTIMIZED
 // @route   POST /api/auth/register
 // @access  Public
 const registerUser = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { phoneNumber, role } = req.body;
 
-    // Check if phone number exists
-    const phoneExists = await User.findOne({ phoneNumber });
+    // Check if phone number exists with timeout
+    const phoneExists = await User.findOne({ phoneNumber })
+      .select('_id')
+      .lean()
+      .maxTimeMS(3000);
+
     if (phoneExists) {
+      console.log(`❌ Phone exists: ${phoneNumber} - ${Date.now() - startTime}ms`);
       return res.status(400).json({
         success: false,
         message: 'Phone number already registered'
@@ -48,46 +56,53 @@ const registerUser = async (req, res) => {
 
     const userCode = await generateUserCode();
     const password = generatePassword(8);
-    const username = userCode; // username = auto-generated userCode
+    const username = userCode;
 
-    // Create user
+    // Create user with hashed password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
     const user = await User.create({
       userCode,
       username,
-      password,
+      password: hashedPassword,
       phoneNumber,
       role
     });
 
-    if (user) {
-      res.status(201).json({
-        success: true,
-        message: 'User registered successfully',
-        data: {
-          _id: user._id,
-          userCode: user.userCode,
-          username: user.username,
-          password, // send password to user once
-          phoneNumber: user.phoneNumber,
-          role: user.role,
-          token: generateToken(user._id, user.role)
-        }
-      });
-    }
+    const token = generateToken(user._id, user.role);
+
+    const responseTime = Date.now() - startTime;
+    console.log(`✅ User registered: ${userCode} - ${responseTime}ms`);
+
+    res.status(201).json({
+      success: true,
+      message: 'User registered successfully',
+      data: {
+        _id: user._id,
+        userCode: user.userCode,
+        username: user.username,
+        password, // send plain password once
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+        token
+      }
+    });
+
   } catch (error) {
-    console.error('Registration error:', error);
+    const responseTime = Date.now() - startTime;
+    console.error(`💥 Registration error after ${responseTime}ms:`, error);
+    
     res.status(500).json({
       success: false,
       message: 'Error in user registration',
-      error: error.message
+      error: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
 };
 
-// @desc    Authenticate user & get token
+// @desc    Authenticate user & get token - ULTRA OPTIMIZED
 // @route   POST /api/auth/login
 // @access  Public
-
 const loginUser = async (req, res) => {
   const startTime = Date.now();
   
@@ -96,123 +111,102 @@ const loginUser = async (req, res) => {
 
     // Input validation
     if (!username || !password) {
-      console.log(`❌ Missing credentials: username=${!!username}, password=${!!password}`);
+      console.log(`❌ Missing credentials - ${Date.now() - startTime}ms`);
       return res.status(400).json({
         success: false,
         message: 'Username and password are required'
       });
     }
 
-    console.log(`🔍 Attempting login for user: ${username}`);
+    console.log(`🔐 Login attempt: ${username}`);
 
-    // Use .select('+password') to explicitly include the password field
-    const user = await User.findOne({ username })
-      .select('+password +userCode +phoneNumber +role +isAdmin +settings');
+    // Optimized database query with timeout
+    const user = await User.findOne({ username: username.trim() })
+      .select('+password +userCode +phoneNumber +role +isAdmin +settings')
+      .maxTimeMS(3000) // 3 second timeout
+      .lean();
 
     if (!user) {
-      console.log(`❌ User not found: ${username}`);
+      console.log(`❌ User not found: ${username} - ${Date.now() - startTime}ms`);
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
-      });
-    }
-
-    console.log(`✅ User found: ${user.username} (${user._id})`);
-    console.log(`🔐 Password field status: exists=${!!user.password}, type=${typeof user.password}`);
-
-    // Validate that we have the password field
-    if (!user.password) {
-      console.error(`❌ Password field missing for user: ${username}`);
-      return res.status(500).json({
-        success: false,
-        message: 'Authentication system error'
       });
     }
 
     // Verify password
-    console.log(`🔐 Comparing password for user: ${username}`);
-    const isPasswordValid = await user.comparePassword(password);
-
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    
     if (!isPasswordValid) {
-      console.log(`❌ Invalid password for user: ${username}`);
+      console.log(`❌ Invalid password: ${username} - ${Date.now() - startTime}ms`);
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
       });
     }
 
-    console.log(`✅ Password validated for user: ${username}`);
-
-    // Generate token - assuming generateToken function exists elsewhere in the file
+    // Generate token
     const token = generateToken(user._id, user.role);
 
-    // Prepare user data for response (password is automatically excluded)
+    // Minimal response data
     const userData = {
       _id: user._id,
       userCode: user.userCode,
       username: user.username,
       phoneNumber: user.phoneNumber,
       role: user.role,
-      isAdmin: user.isAdminUser ? user.isAdminUser() : (user.role === 'admin' || user.isAdmin),
-      settings: user.settings || {
-        profileImageUrl: '',
-        selectedLeague: { code: '', name: '' },
-        selectedTeam: { name: '', logoUrl: '' }
-      },
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt
+      isAdmin: user.role === 'admin' || user.isAdmin,
+      token
     };
 
     const responseTime = Date.now() - startTime;
-    console.log(`🎉 Login successful: ${username} - ${responseTime}ms`);
+    console.log(`✅ Login success: ${username} - ${responseTime}ms`);
 
     res.json({
       success: true,
       message: 'Login successful',
-      data: {
-        ...userData,
-        token: token
-      }
+      data: userData
     });
 
   } catch (error) {
     const responseTime = Date.now() - startTime;
     console.error(`💥 Login error after ${responseTime}ms:`, error);
     
-    // More specific error messages
     let errorMessage = 'Server error during login';
-    if (error.name === 'MongoError' || error.name === 'MongooseError') {
-      errorMessage = 'Database error occurred';
-    } else if (error.message.includes('bcrypt')) {
-      errorMessage = 'Password comparison error';
+    if (error.name === 'MongoError' || error.name === 'MongoTimeoutError') {
+      errorMessage = 'Database timeout - please try again';
     }
     
     res.status(500).json({
       success: false,
       message: errorMessage,
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
+      error: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
 };
 
-export { registerUser, loginUser };
- 
-// ===== Additional Auth/User endpoints =====
-// @desc    Get current user with settings - OPTIMIZED
+// @desc    Get current user - OPTIMIZED
 // @route   GET /api/auth/me
 // @access  Private
 const getMe = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    // Optimized: Only select necessary fields, exclude password
     const user = await User.findById(req.user._id)
       .select('userCode username phoneNumber role isAdmin settings createdAt')
-      .lean();
-      
+      .lean()
+      .maxTimeMS(2000);
+
     if (!user) {
       return res.status(404).json({ 
         success: false, 
         message: 'User not found' 
       });
+    }
+
+    const responseTime = Date.now() - startTime;
+    if (responseTime > 50) {
+      console.log(`👤 GetMe: ${responseTime}ms`);
     }
     
     res.json({
@@ -224,20 +218,20 @@ const getMe = async (req, res) => {
     console.error('GetMe error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to fetch user', 
-      error: error.message 
+      message: 'Failed to fetch user'
     });
   }
 };
 
-// @desc    Update user settings (avatar, league, team) - OPTIMIZED
+// @desc    Update user settings - OPTIMIZED
 // @route   PUT /api/auth/settings
 // @access  Private
 const updateSettings = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { profileImageUrl, selectedLeague, selectedTeam } = req.body;
     
-    // Use findByIdAndUpdate for better performance (single operation)
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
@@ -254,9 +248,10 @@ const updateSettings = async (req, res) => {
         }
       },
       { 
-        new: true, // Return updated document
-        select: '-password', // Exclude password
-        lean: true // Return plain JavaScript object
+        new: true,
+        select: '-password',
+        lean: true,
+        maxTimeMS: 3000
       }
     );
 
@@ -267,6 +262,9 @@ const updateSettings = async (req, res) => {
       });
     }
 
+    const responseTime = Date.now() - startTime;
+    console.log(`⚙️ Settings updated: ${responseTime}ms`);
+
     res.json({
       success: true,
       message: 'Settings updated successfully',
@@ -276,25 +274,28 @@ const updateSettings = async (req, res) => {
     console.error('Update settings error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to update settings', 
-      error: error.message 
+      message: 'Failed to update settings'
     });
   }
 };
 
-export { getMe, updateSettings };
-
 // ===== Admin: Users CRUD =====
+
 // @desc    List users - OPTIMIZED
 // @route   GET /api/auth/users
 // @access  Admin
 const listUsers = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    // Optimized: Use lean() and only select necessary fields
     const users = await User.find()
       .select('-password')
       .sort({ createdAt: -1 })
-      .lean();
+      .lean()
+      .maxTimeMS(5000);
+
+    const responseTime = Date.now() - startTime;
+    console.log(`📊 Users listed: ${users.length} users - ${responseTime}ms`);
       
     res.json({ 
       success: true, 
@@ -304,8 +305,7 @@ const listUsers = async (req, res) => {
     console.error('List users error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to list users', 
-      error: error.message 
+      message: 'Failed to list users'
     });
   }
 };
@@ -314,6 +314,8 @@ const listUsers = async (req, res) => {
 // @route   POST /api/auth/users
 // @access  Admin
 const createUserAdmin = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { username, password, phoneNumber, role = 'player' } = req.body;
     
@@ -324,10 +326,12 @@ const createUserAdmin = async (req, res) => {
       });
     }
     
-    // Check existence in single query
     const exists = await User.findOne({ 
       $or: [{ username }, { phoneNumber }] 
-    });
+    })
+    .select('_id')
+    .lean()
+    .maxTimeMS(3000);
     
     if (exists) {
       return res.status(400).json({ 
@@ -336,17 +340,24 @@ const createUserAdmin = async (req, res) => {
       });
     }
     
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
     const user = await User.create({
       userCode: username,
       username,
-      password,
+      password: hashedPassword,
       phoneNumber,
       role,
       isAdmin: role === 'admin'
     });
     
-    // Return without password
-    const sanitized = await User.findById(user._id).select('-password').lean();
+    const sanitized = await User.findById(user._id)
+      .select('-password')
+      .lean()
+      .maxTimeMS(2000);
+
+    const responseTime = Date.now() - startTime;
+    console.log(`✅ Admin user created: ${username} - ${responseTime}ms`);
     
     res.status(201).json({ 
       success: true, 
@@ -357,8 +368,7 @@ const createUserAdmin = async (req, res) => {
     console.error('Create user error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to create user', 
-      error: error.message 
+      message: 'Failed to create user'
     });
   }
 };
@@ -367,15 +377,19 @@ const createUserAdmin = async (req, res) => {
 // @route   PUT /api/auth/users/:id
 // @access  Admin
 const updateUserAdmin = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { id } = req.params;
     const { username, password, phoneNumber, role, isAdmin } = req.body;
     
-    // Build update object dynamically
     const updateFields = {};
     if (username) updateFields.username = username;
     if (phoneNumber) updateFields.phoneNumber = phoneNumber;
-    if (password) updateFields.password = password;
+    
+    if (password) {
+      updateFields.password = await bcrypt.hash(password, 10);
+    }
     
     if (typeof role !== 'undefined') {
       updateFields.role = role;
@@ -390,7 +404,8 @@ const updateUserAdmin = async (req, res) => {
       { 
         new: true,
         select: '-password',
-        lean: true
+        lean: true,
+        maxTimeMS: 3000
       }
     );
     
@@ -400,6 +415,9 @@ const updateUserAdmin = async (req, res) => {
         message: 'User not found' 
       });
     }
+
+    const responseTime = Date.now() - startTime;
+    console.log(`✏️ User updated: ${user.username} - ${responseTime}ms`);
     
     res.json({ 
       success: true, 
@@ -410,26 +428,32 @@ const updateUserAdmin = async (req, res) => {
     console.error('Update user error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to update user', 
-      error: error.message 
+      message: 'Failed to update user'
     });
   }
 };
 
-// @desc    Delete user (admin)
+// @desc    Delete user (admin) - OPTIMIZED
 // @route   DELETE /api/auth/users/:id
 // @access  Admin
 const deleteUserAdmin = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { id } = req.params;
-    const user = await User.findByIdAndDelete(id);
-    
+    const user = await User.findByIdAndDelete(id)
+      .select('username')
+      .lean();
+
     if (!user) {
       return res.status(404).json({ 
         success: false, 
         message: 'User not found' 
       });
     }
+
+    const responseTime = Date.now() - startTime;
+    console.log(`🗑️ User deleted: ${user.username} - ${responseTime}ms`);
     
     res.json({ 
       success: true, 
@@ -439,8 +463,7 @@ const deleteUserAdmin = async (req, res) => {
     console.error('Delete user error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to delete user', 
-      error: error.message 
+      message: 'Failed to delete user'
     });
   }
 };
@@ -449,12 +472,15 @@ const deleteUserAdmin = async (req, res) => {
 // @route   GET /api/auth/stats
 // @access  Admin
 const getAdminStats = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    // Use parallel queries for better performance
     const [totalUsers, totalAdmins, leagues] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ $or: [{ role: 'admin' }, { isAdmin: true }] }),
-      League.find({}, { matches: 1, status: 1, participants: 1 }).lean()
+      User.countDocuments().maxTimeMS(3000),
+      User.countDocuments({ $or: [{ role: 'admin' }, { isAdmin: true }] }).maxTimeMS(3000),
+      League.find({}, { matches: 1, status: 1, participants: 1 })
+        .lean()
+        .maxTimeMS(5000)
     ]);
 
     const activeLeagues = leagues.filter(l => l.status === 'active').length;
@@ -464,7 +490,10 @@ const getAdminStats = async (req, res) => {
       return sum + pending;
     }, 0);
     const totalParticipants = leagues.reduce((sum, l) => sum + (l.participants?.length || 0), 0);
-    const revenue = totalParticipants * 0; // Placeholder
+    const revenue = totalParticipants * 0;
+
+    const responseTime = Date.now() - startTime;
+    console.log(`📈 Admin stats: ${responseTime}ms`);
 
     res.json({
       success: true,
@@ -480,10 +509,19 @@ const getAdminStats = async (req, res) => {
     console.error('Get admin stats error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to get stats', 
-      error: error.message 
+      message: 'Failed to get stats'
     });
   }
 };
 
-export { listUsers, createUserAdmin, updateUserAdmin, deleteUserAdmin, getAdminStats };
+export { 
+  registerUser, 
+  loginUser, 
+  getMe, 
+  updateSettings, 
+  listUsers, 
+  createUserAdmin, 
+  updateUserAdmin, 
+  deleteUserAdmin, 
+  getAdminStats 
+};
