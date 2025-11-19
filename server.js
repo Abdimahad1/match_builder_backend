@@ -1,7 +1,8 @@
+// server.js (or index.js)
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import compression from 'compression'; // ADD THIS
+import compression from 'compression';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import jwt from 'jsonwebtoken';
@@ -16,18 +17,38 @@ connectDB();
 const app = express();
 const server = createServer(app);
 
-// WebSocket server
+// WebSocket server with performance optimizations
 const wss = new WebSocketServer({
   server,
   path: '/ws',
+  maxPayload: 1024 * 1024, // 1MB max payload
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 3
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024
+    }
+  }
 });
 
 // Store connected WebSocket clients
 const connectedClients = new Map();
 
-// WebSocket connection handler
+// WebSocket connection handler with timeout
 wss.on('connection', (ws, request) => {
+  const connectionStart = Date.now();
   console.log('🔌 New WebSocket connection attempt');
+
+  // Set authentication timeout (5 seconds)
+  const authTimeout = setTimeout(() => {
+    if (ws.readyState === ws.OPEN) {
+      console.log('⏰ WebSocket authentication timeout');
+      ws.close(1008, 'Authentication timeout');
+    }
+  }, 5000);
 
   const url = new URL(request.url, `http://${request.headers.host}`);
   const token = url.searchParams.get('token');
@@ -35,33 +56,46 @@ wss.on('connection', (ws, request) => {
   if (!token) {
     console.log('❌ No token provided, closing WebSocket');
     ws.close(1008, 'Authentication required');
+    clearTimeout(authTimeout);
     return;
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const userId = decoded.id;
-
-    console.log('✅ WS authenticated:', userId);
+    
+    clearTimeout(authTimeout);
+    
+    const connectionTime = Date.now() - connectionStart;
+    console.log(`✅ WS authenticated: ${userId} in ${connectionTime}ms`);
+    
     connectedClients.set(userId, ws);
     console.log('👥 Total WebSocket clients:', connectedClients.size);
 
-    ws.send(JSON.stringify({
+    // Send minimal connection confirmation
+    const connectionMsg = JSON.stringify({
       type: 'CONNECTION_ESTABLISHED',
-      message: 'WebSocket connection established',
-      timestamp: new Date().toISOString(),
-    }));
+      timestamp: Date.now()
+    });
+    
+    if (ws.readyState === ws.OPEN) {
+      ws.send(connectionMsg);
+    }
 
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message);
-        console.log(`📨 WS message from ${userId}:`, data);
-
+        
+        // Only handle PING for performance
         if (data.type === 'PING') {
-          ws.send(JSON.stringify({
+          const pongMsg = JSON.stringify({
             type: 'PONG',
-            timestamp: new Date().toISOString(),
-          }));
+            timestamp: Date.now()
+          });
+          
+          if (ws.readyState === ws.OPEN) {
+            ws.send(pongMsg);
+          }
         }
       } catch (err) {
         console.error('WS Error parsing message:', err);
@@ -79,6 +113,7 @@ wss.on('connection', (ws, request) => {
     });
   } catch (error) {
     console.log('❌ Invalid WS token:', error.message);
+    clearTimeout(authTimeout);
     ws.close(1008, 'Invalid authentication token');
   }
 });
@@ -111,7 +146,6 @@ const broadcastToUser = (userId, message) => {
   if (ws && ws.readyState === ws.OPEN) {
     try {
       ws.send(JSON.stringify(message));
-      console.log(`📨 Message sent to user ${userId}`);
     } catch (err) {
       console.error(`Broadcast error to ${userId}:`, err);
       connectedClients.delete(userId);
@@ -120,34 +154,50 @@ const broadcastToUser = (userId, message) => {
 };
 
 // ----------------------
-// MIDDLEWARE - IMPROVED
+// PERFORMANCE MIDDLEWARE
 // ----------------------
 
-// Response compression for faster transfers
-app.use(compression());
+// Compression with optimized settings
+app.use(compression({
+  level: 6, // Balanced compression level
+  threshold: 1024, // Compress responses larger than 1KB
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) return false;
+    return compression.filter(req, res);
+  }
+}));
 
-// CORS - Allow ALL ORIGINS
+// Optimized CORS
 app.use(cors({
   origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  maxAge: 86400 // 24 hours cache for preflight
 }));
 
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+// Optimized body parsing - reduced limits for login
+app.use(express.json({ 
+  limit: '500kb', // Reduced from 10mb for login
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
-// Global CORS headers + response time logging
+app.use(express.urlencoded({ 
+  extended: false, 
+  limit: '500kb' // Reduced from 10mb
+}));
+
+// Performance monitoring middleware
 app.use((req, res, next) => {
   const start = Date.now();
+  req.requestId = Date.now().toString(36) + Math.random().toString(36).substr(2);
 
-  // Enhanced CORS headers
+  // Essential headers only
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Request-ID,Accept');
-  res.header('Access-Control-Expose-Headers', 'X-Response-Time');
+  res.header('Access-Control-Expose-Headers', 'X-Response-Time, X-Request-ID');
   
   // Security headers
   res.header('X-Content-Type-Options', 'nosniff');
@@ -161,7 +211,14 @@ app.use((req, res, next) => {
   res.end = function (chunk, encoding) {
     const duration = Date.now() - start;
     res.setHeader('X-Response-Time', `${duration}ms`);
-    console.log(`${req.method} ${req.originalUrl} - ${duration}ms - Origin: ${req.headers.origin || 'direct'}`);
+    res.setHeader('X-Request-ID', req.requestId);
+    
+    // Only log slow requests (>500ms) for performance
+    if (duration > 500) {
+      console.log(`🐌 ${req.method} ${req.originalUrl} - ${duration}ms - ID: ${req.requestId}`);
+    } else if (req.originalUrl.includes('/api/auth')) {
+      console.log(`⚡ ${req.method} ${req.originalUrl} - ${duration}ms - ID: ${req.requestId}`);
+    }
 
     originalEnd.call(this, chunk, encoding);
   };
@@ -169,27 +226,27 @@ app.use((req, res, next) => {
   next();
 });
 
-// Cache GET requests
+// Cache GET requests (skip for auth routes)
 app.use((req, res, next) => {
-  if (req.method === 'GET') {
+  if (req.method === 'GET' && !req.path.includes('/api/auth')) {
     res.set('Cache-Control', 'public, max-age=300');
   }
   next();
 });
 
 // ----------------------
-// ROUTES
+// HIGH-PERFORMANCE ROUTES
 // ----------------------
 
 app.use('/api/auth', (await import('./routes/authRoutes.js')).default);
 app.use('/api/leagues', (await import('./routes/leagueRoutes.js')).default);
 
-// Health endpoints
+// Optimized health endpoints
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
     message: 'Server healthy',
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
     uptime: process.uptime(),
     connectedClients: connectedClients.size,
   });
@@ -200,32 +257,31 @@ app.get('/api/ws-health', (req, res) => {
     success: true,
     message: 'WebSocket running',
     connectedClients: connectedClients.size,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
   });
 });
 
-// CORS test
+// CORS test - minimal response
 app.get('/api/cors-test', (req, res) => {
   res.json({
     success: true,
-    message: 'CORS working for ALL origins',
+    message: 'CORS working',
     yourOrigin: req.headers.origin || 'No origin',
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
   });
 });
 
-// API Root
+// API Root - minimal response
 app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'Face2Face League API running',
     version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
+    timestamp: Date.now(),
   });
 });
 
-// 404 Handler
+// 404 Handler - minimal
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -233,7 +289,7 @@ app.use((req, res) => {
   });
 });
 
-// Error Handler
+// Error Handler - optimized
 app.use((error, req, res, next) => {
   console.error('Server Error:', error);
 
@@ -244,6 +300,7 @@ app.use((error, req, res, next) => {
     success: false,
     message: 'Internal server error',
     error: process.env.NODE_ENV === 'production' ? undefined : error.message,
+    timestamp: Date.now(),
   });
 });
 
@@ -256,8 +313,8 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔌 WebSocket path: /ws`);
-  console.log(`🌍 CORS: ALL ORIGINS ALLOWED`);
-  console.log(`⚡ Compression: ENABLED`);
+  console.log(`⚡ Performance Mode: ENABLED`);
+  console.log(`📊 Max Payload: 1MB`);
 });
 
 // Graceful shutdown
