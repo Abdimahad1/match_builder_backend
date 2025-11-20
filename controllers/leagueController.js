@@ -40,21 +40,18 @@ loadWebSocketFunctions();
 const checkAdmin = (league, reqUser) => {
   if (!league || !league.admin || !reqUser) {
     console.log('❌ Admin check failed: Missing league, admin, or user');
-    console.log('❌ League:', league ? league.name : 'missing');
-    console.log('❌ League admin:', league?.admin ? 'exists' : 'missing');
-    console.log('❌ Request user:', reqUser ? reqUser.username : 'missing');
     return false;
   }
 
-  // Convert both to string for comparison (handles ObjectId and string)
-  const leagueAdminId = league.admin.toString();
+  // Extract IDs safely
+  const leagueAdminId = league.admin._id ? league.admin._id.toString() : league.admin.toString();
   const requestUserId = reqUser._id ? reqUser._id.toString() : reqUser.toString();
   
   console.log(`🔐 Admin check details:`);
   console.log(`   - League: ${league.name}`);
   console.log(`   - League Admin ID: ${leagueAdminId}`);
   console.log(`   - Request User ID: ${requestUserId}`);
-  console.log(`   - Request User: ${reqUser.username} (${reqUser._id})`);
+  console.log(`   - Request User: ${reqUser.username || 'Unknown'}`);
   console.log(`   - Match: ${leagueAdminId === requestUserId}`);
   
   return leagueAdminId === requestUserId;
@@ -622,7 +619,8 @@ exports.updateMatchResult = async (req, res) => {
     const { homeGoals, awayGoals } = req.body;
 
     console.log(`🔄 Updating match ${matchId} with score: ${homeGoals}-${awayGoals}`);
-    console.log(`👤 Request user:`, req.user);
+    console.log(`👤 Request user ID:`, req.user._id);
+    console.log(`👤 Request user:`, req.user.username);
 
     // Validate input
     if (homeGoals === undefined || awayGoals === undefined) {
@@ -642,9 +640,9 @@ exports.updateMatchResult = async (req, res) => {
       });
     }
 
-    // Find the league containing this match - POPULATE ADMIN
+    // Find the league containing this match - POPULATE ADMIN PROPERLY
     const league = await League.findOne({ "matches._id": matchId })
-      .populate('admin', '_id username userCode phoneNumber role');
+      .populate('admin', '_id username email name');
 
     if (!league) {
       console.log(`❌ League not found for match ${matchId}`);
@@ -655,9 +653,10 @@ exports.updateMatchResult = async (req, res) => {
     }
 
     console.log(`✅ Found league: ${league.name}`);
-    console.log(`✅ League admin:`, league.admin);
+    console.log(`✅ League admin ID:`, league.admin._id);
+    console.log(`✅ League admin username:`, league.admin.username);
 
-    // Check if user is admin - FIXED with proper user structure
+    // Check if user is admin - FIXED
     if (!checkAdmin(league, req.user)) {
       console.log(`❌ Admin check failed: User is not the league admin`);
       console.log(`❌ Current user: ${req.user.username} (${req.user._id})`);
@@ -683,11 +682,6 @@ exports.updateMatchResult = async (req, res) => {
     console.log(`✅ Found match: ${match.homeTeam} vs ${match.awayTeam}`);
     console.log(`📊 Previous score: ${match.homeGoals}-${match.awayGoals}, Played: ${match.played}`);
 
-    // Store previous state for comparison
-    const wasPlayed = match.played;
-    const prevHomeGoals = match.homeGoals;
-    const prevAwayGoals = match.awayGoals;
-
     // Update match result
     match.homeGoals = homeGoalsInt;
     match.awayGoals = awayGoalsInt;
@@ -695,7 +689,7 @@ exports.updateMatchResult = async (req, res) => {
 
     console.log(`📊 New score: ${match.homeGoals}-${match.awayGoals}, Played: ${match.played}`);
 
-    // Always recalculate standings to ensure accuracy and prevent double counting
+    // Always recalculate standings to ensure accuracy
     await recalculateStandings(league);
 
     await league.save();
