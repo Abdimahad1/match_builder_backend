@@ -36,12 +36,13 @@ loadWebSocketFunctions();
 
 // FIXED: Helper function for admin check with proper ObjectId comparison
 // FIXED: Helper function for admin check with proper user structure
+// FIXED: Helper function for admin check with proper user structure
 const checkAdmin = (league, reqUser) => {
   if (!league || !league.admin || !reqUser) {
     console.log('❌ Admin check failed: Missing league, admin, or user');
-    console.log('❌ League:', league ? 'exists' : 'missing');
+    console.log('❌ League:', league ? league.name : 'missing');
     console.log('❌ League admin:', league?.admin ? 'exists' : 'missing');
-    console.log('❌ Request user:', reqUser ? 'exists' : 'missing');
+    console.log('❌ Request user:', reqUser ? reqUser.username : 'missing');
     return false;
   }
 
@@ -53,7 +54,7 @@ const checkAdmin = (league, reqUser) => {
   console.log(`   - League: ${league.name}`);
   console.log(`   - League Admin ID: ${leagueAdminId}`);
   console.log(`   - Request User ID: ${requestUserId}`);
-  console.log(`   - Request User:`, reqUser);
+  console.log(`   - Request User: ${reqUser.username} (${reqUser._id})`);
   console.log(`   - Match: ${leagueAdminId === requestUserId}`);
   
   return leagueAdminId === requestUserId;
