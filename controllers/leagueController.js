@@ -35,21 +35,28 @@ const loadWebSocketFunctions = async () => {
 loadWebSocketFunctions();
 
 // FIXED: Helper function for admin check with proper ObjectId comparison
-const checkAdmin = (league, userId) => {
-  if (!league || !league.admin || !userId) {
-    console.log('❌ Admin check failed: Missing league, admin, or userId');
+// FIXED: Helper function for admin check with proper user structure
+const checkAdmin = (league, reqUser) => {
+  if (!league || !league.admin || !reqUser) {
+    console.log('❌ Admin check failed: Missing league, admin, or user');
+    console.log('❌ League:', league ? 'exists' : 'missing');
+    console.log('❌ League admin:', league?.admin ? 'exists' : 'missing');
+    console.log('❌ Request user:', reqUser ? 'exists' : 'missing');
     return false;
   }
 
+  // Convert both to string for comparison (handles ObjectId and string)
   const leagueAdminId = league.admin.toString();
-  const requestUserId = userId.toString();
+  const requestUserId = reqUser._id ? reqUser._id.toString() : reqUser.toString();
   
-  console.log(`🔐 Admin check - League Admin: ${leagueAdminId}, Request User: ${requestUserId}`);
+  console.log(`🔐 Admin check details:`);
+  console.log(`   - League: ${league.name}`);
+  console.log(`   - League Admin ID: ${leagueAdminId}`);
+  console.log(`   - Request User ID: ${requestUserId}`);
+  console.log(`   - Request User:`, reqUser);
+  console.log(`   - Match: ${leagueAdminId === requestUserId}`);
   
-  const isAdmin = leagueAdminId === requestUserId;
-  console.log(`🔐 Admin check result: ${isAdmin}`);
-  
-  return isAdmin;
+  return leagueAdminId === requestUserId;
 };
 
 // Create League
@@ -124,6 +131,7 @@ exports.getMyLeagues = async (req, res) => {
 };
 
 // Update League
+// Update League - COMPLETE
 exports.updateLeague = async (req, res) => {
   try {
     const league = await League.findById(req.params.id);
@@ -136,7 +144,7 @@ exports.updateLeague = async (req, res) => {
     }
 
     // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       return res.status(403).json({ 
         success: false, 
         message: "Only admin can update league" 
@@ -177,6 +185,7 @@ exports.updateLeague = async (req, res) => {
 };
 
 // Update standings
+// Update standings - COMPLETE
 exports.updateStandings = async (req, res) => {
   try {
     const { teams } = req.body;
@@ -190,7 +199,7 @@ exports.updateStandings = async (req, res) => {
     }
 
     // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       return res.status(403).json({ 
         success: false, 
         message: "Only admin can update standings" 
@@ -360,6 +369,7 @@ exports.joinLeague = async (req, res) => {
 };
 
 // Generate matches from participants
+// Generate matches from participants - COMPLETE
 exports.generateMatches = async (req, res) => {
   try {
     const league = await League.findById(req.params.id);
@@ -371,7 +381,7 @@ exports.generateMatches = async (req, res) => {
     }
 
     // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       return res.status(403).json({ 
         success: false, 
         message: "Only admin can generate matches" 
@@ -604,12 +614,14 @@ const recalculateStandings = async (league) => {
 };
 
 // FIXED: Update match result - prevents double counting
+// FIXED: Update match result - with proper user structure handling
 exports.updateMatchResult = async (req, res) => {
   try {
     const { matchId } = req.params;
     const { homeGoals, awayGoals } = req.body;
 
     console.log(`🔄 Updating match ${matchId} with score: ${homeGoals}-${awayGoals}`);
+    console.log(`👤 Request user:`, req.user);
 
     // Validate input
     if (homeGoals === undefined || awayGoals === undefined) {
@@ -629,9 +641,9 @@ exports.updateMatchResult = async (req, res) => {
       });
     }
 
-    // Find the league containing this match
+    // Find the league containing this match - POPULATE ADMIN
     const league = await League.findOne({ "matches._id": matchId })
-      .populate('admin', 'name email username');
+      .populate('admin', '_id username userCode phoneNumber role');
 
     if (!league) {
       console.log(`❌ League not found for match ${matchId}`);
@@ -642,17 +654,20 @@ exports.updateMatchResult = async (req, res) => {
     }
 
     console.log(`✅ Found league: ${league.name}`);
+    console.log(`✅ League admin:`, league.admin);
 
-    // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    // Check if user is admin - FIXED with proper user structure
+    if (!checkAdmin(league, req.user)) {
       console.log(`❌ Admin check failed: User is not the league admin`);
+      console.log(`❌ Current user: ${req.user.username} (${req.user._id})`);
+      console.log(`❌ League admin: ${league.admin.username} (${league.admin._id})`);
       return res.status(403).json({ 
         success: false, 
-        message: "Only admin can update match results" 
+        message: "Only league admin can update match results" 
       });
     }
 
-    console.log(`✅ Admin check passed`);
+    console.log(`✅ Admin check passed - User is the league admin`);
 
     // Find and update the match
     const match = league.matches.id(matchId);
@@ -742,6 +757,7 @@ exports.getLeagueByCode = async (req, res) => {
 };
 
 // Delete League - FIXED
+// Delete League - COMPLETE
 exports.deleteLeague = async (req, res) => {
   try {
     const league = await League.findById(req.params.id);
@@ -754,7 +770,7 @@ exports.deleteLeague = async (req, res) => {
     }
 
     // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       return res.status(403).json({ 
         success: false, 
         message: "Only admin can delete league" 
@@ -779,6 +795,7 @@ exports.deleteLeague = async (req, res) => {
 };
 
 // BULK JOIN LEAGUE (Admin adds multiple teams manually) - FIXED
+// BULK JOIN LEAGUE (Admin adds multiple teams manually) - COMPLETE
 exports.bulkJoinLeague = async (req, res) => {
   try {
     const { leagueId } = req.params;
@@ -790,7 +807,7 @@ exports.bulkJoinLeague = async (req, res) => {
     }
 
     // Only admin can bulk add - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       return res.status(403).json({ success: false, message: "Only admin can bulk add participants" });
     }
 
@@ -861,23 +878,24 @@ exports.getCelebratingWinners = async (req, res) => {
 };
 
 // FIXED: Set league winner manually (admin only)
+// Set league winner manually - COMPLETE
 exports.setLeagueWinner = async (req, res) => {
   try {
     const { leagueId } = req.params;
     const { teamName, teamLogo } = req.body;
 
     console.log(`🏆 Setting winner for league ${leagueId}, team: ${teamName}`);
-    console.log(`👤 Request user ID: ${req.user.id}`);
+    console.log(`👤 Request user:`, req.user);
 
     const league = await League.findById(leagueId);
     if (!league) {
       return res.status(404).json({ success: false, message: "League not found" });
     }
 
-    console.log(`🏈 League admin ID: ${league.admin}`);
+    console.log(`🏈 League admin:`, league.admin);
 
     // Check if user is admin - FIXED
-    if (!checkAdmin(league, req.user.id)) {
+    if (!checkAdmin(league, req.user)) {
       console.log(`❌ Admin check failed: User is not the league admin`);
       return res.status(403).json({ 
         success: false, 
